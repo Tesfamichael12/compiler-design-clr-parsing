@@ -1185,7 +1185,6 @@ export default function ParserLab() {
             </div>
           </div>
         )}
-
       </div>
 
       {(visibleSteps.length > 0 || (isAccepted && parseTreeDiagram)) && (
