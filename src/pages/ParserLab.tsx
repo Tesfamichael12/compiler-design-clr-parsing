@@ -146,7 +146,9 @@ export default function ParserLab() {
       lines.push(`class ${acceptStates.map((i) => `I${i}`).join(", ")} accept`);
     }
 
-    return lines.join("\n");
+    const diagram = lines.join("\n");
+    console.log("[buildDfaMermaid] diagram:", diagram);
+    return diagram;
   };
 
   const handleGenerate = () => {
@@ -161,6 +163,9 @@ export default function ParserLab() {
       const collection = buildCanonicalCollection(g);
       const table = buildParsingTable(g);
 
+      console.log("[handleGenerate] grammar:", g);
+      console.log("[handleGenerate] collection:", collection);
+      console.log("[handleGenerate] table:", table);
       setGrammar(g);
       setParsingTable(table);
       setDfaDiagram(buildDfaMermaid(collection, table));
@@ -255,30 +260,38 @@ export default function ParserLab() {
     };
   }, [dfaDiagram, isDark]);
 
-  const handleDfaWheel = (event: React.WheelEvent<HTMLDivElement>) => {
-    event.preventDefault();
+  useEffect(() => {
     const viewport = dfaViewportRef.current;
     if (!viewport) return;
 
-    const rect = viewport.getBoundingClientRect();
-    const cursorX = event.clientX - rect.left;
-    const cursorY = event.clientY - rect.top;
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
 
-    const zoomDelta = event.deltaY > 0 ? -0.1 : 0.1;
-    const nextScale = Math.min(6, Math.max(0.25, dfaScale + zoomDelta));
+      const rect = viewport.getBoundingClientRect();
+      const cursorX = event.clientX - rect.left;
+      const cursorY = event.clientY - rect.top;
 
-    if (nextScale === dfaScale) return;
+      const zoomDelta = event.deltaY > 0 ? -0.1 : 0.1;
+      const nextScale = Math.min(6, Math.max(0.25, dfaScale + zoomDelta));
 
-    const scaleRatio = nextScale / dfaScale;
-    const nextTranslate = {
-      x: cursorX - (cursorX - dfaTranslate.x) * scaleRatio,
-      y: cursorY - (cursorY - dfaTranslate.y) * scaleRatio,
+      if (nextScale === dfaScale) return;
+
+      const scaleRatio = nextScale / dfaScale;
+      const nextTranslate = {
+        x: cursorX - (cursorX - dfaTranslate.x) * scaleRatio,
+        y: cursorY - (cursorY - dfaTranslate.y) * scaleRatio,
+      };
+
+      setDfaScale(nextScale);
+      setDfaTranslate(nextTranslate);
+      lastTranslateRef.current = nextTranslate;
     };
 
-    setDfaScale(nextScale);
-    setDfaTranslate(nextTranslate);
-    lastTranslateRef.current = nextTranslate;
-  };
+    viewport.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      viewport.removeEventListener("wheel", handleWheel);
+    };
+  }, [dfaScale, dfaTranslate]);
 
   const handleDfaPanStart = (event: React.MouseEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
@@ -768,7 +781,6 @@ export default function ParserLab() {
                   cursor: isPanning ? "grabbing" : "grab",
                   userSelect: "none",
                 }}
-                onWheel={handleDfaWheel}
                 onMouseDown={handleDfaPanStart}
                 onMouseMove={handleDfaPanMove}
                 onMouseUp={handleDfaPanEnd}
