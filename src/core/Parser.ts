@@ -8,11 +8,23 @@ export interface ParseStep {
   action: string;
 }
 
+export interface ParseNode {
+  symbol: string;
+  children: ParseNode[];
+}
+
+export interface ParseResult {
+  steps: ParseStep[];
+  accepted: boolean;
+  error?: string;
+  parseTree?: ParseNode;
+}
+
 export function parseString(
   input: string,
   _grammar: Grammar,
   table: ParsingTable,
-): { steps: ParseStep[]; accepted: boolean; error?: string } {
+): ParseResult {
   const steps: ParseStep[] = [];
 
   // Convert input string to tokens/symbols
@@ -27,6 +39,11 @@ export function parseString(
   const stack: (number | string)[] = [0]; // Stack of states and symbols. Actually CLR parser usually pushes state.
   // Standard LR stack: s0 X1 s1 X2 s2 ...
   // where s0 is start state.
+
+  // Parallel stack for parse tree construction.
+  // SHIFT pushes a terminal node.
+  // REDUCE pops |rhs| nodes, wraps them in an LHS node, then pushes it.
+  const nodeStack: ParseNode[] = [];
 
   let ip = 0; // Input pointer
   let stepCount = 0;
@@ -63,6 +80,8 @@ export function parseString(
 
       stack.push(currentToken);
       stack.push(nextState);
+
+      nodeStack.push({ symbol: currentToken, children: [] });
       ip++;
     } else if (action.type === ActionType.REDUCE) {
       stepLog.action = `Reduce by ${action.productionStr}`;
@@ -73,6 +92,19 @@ export function parseString(
       for (let k = 0; k < 2 * len; k++) {
         stack.pop();
       }
+
+      const children: ParseNode[] = [];
+      for (let k = 0; k < len; k++) {
+        const child = nodeStack.pop();
+        if (child) children.push(child);
+      }
+      children.reverse();
+
+      const lhsNode: ParseNode = {
+        symbol: action.productionLhs!,
+        children: len === 0 ? [{ symbol: "ε", children: [] }] : children,
+      };
+      nodeStack.push(lhsNode);
 
       const prevState = stack[stack.length - 1] as number;
       const lhs = action.productionLhs!;
@@ -95,7 +127,10 @@ export function parseString(
     } else if (action.type === ActionType.ACCEPT) {
       stepLog.action = "ACCEPT";
       steps.push(stepLog);
-      const result = { steps, accepted: true };
+
+      const parseTree =
+        nodeStack.length > 0 ? nodeStack[nodeStack.length - 1] : undefined;
+      const result = { steps, accepted: true, parseTree };
       console.log("[parseString] result:", result);
       return result;
     }

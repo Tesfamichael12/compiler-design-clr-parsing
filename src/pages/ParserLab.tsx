@@ -10,7 +10,7 @@ import {
   buildParsingTable,
   type ParsingTable,
 } from "../core/Table";
-import { parseString, type ParseStep } from "../core/Parser";
+import { parseString, type ParseNode, type ParseStep } from "../core/Parser";
 import {
   AlertCircle,
   CheckCircle,
@@ -51,6 +51,9 @@ export default function ParserLab() {
   const [dfaDiagram, setDfaDiagram] = useState("");
   const [dfaError, setDfaError] = useState<string | null>(null);
 
+  const [parseTreeDiagram, setParseTreeDiagram] = useState("");
+  const [parseTreeError, setParseTreeError] = useState<string | null>(null);
+
   const [allSteps, setAllSteps] = useState<ParseStep[]>([]);
   const [visibleSteps, setVisibleSteps] = useState<ParseStep[]>([]);
   const [isAccepted, setIsAccepted] = useState(false);
@@ -69,9 +72,22 @@ export default function ParserLab() {
   const panStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastTranslateRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
+  const parseTreeContainerRef = useRef<HTMLDivElement | null>(null);
+  const parseTreeViewportRef = useRef<HTMLDivElement | null>(null);
+  const parseTreeRenderCount = useRef(0);
+  const parseTreePanStartRef = useRef<{ x: number; y: number } | null>(null);
+  const parseTreeLastTranslateRef = useRef<{ x: number; y: number }>({
+    x: 0,
+    y: 0,
+  });
+
   const [dfaScale, setDfaScale] = useState(1);
   const [dfaTranslate, setDfaTranslate] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
+
+  const [parseTreeScale, setParseTreeScale] = useState(1);
+  const [parseTreeTranslate, setParseTreeTranslate] = useState({ x: 0, y: 0 });
+  const [isParseTreePanning, setIsParseTreePanning] = useState(false);
 
   const buildDfaMermaid = (
     collection: CanonicalCollection,
@@ -151,13 +167,36 @@ export default function ParserLab() {
     return diagram;
   };
 
+  const buildParseTreeMermaid = (root: ParseNode) => {
+    const lines: string[] = ["flowchart TD"];
+    const escapeLabel = (value: string) => value.replace(/"/g, '\\"');
+
+    let counter = 0;
+    const nextId = () => `N${counter++}`;
+
+    const walk = (node: ParseNode): string => {
+      const id = nextId();
+      lines.push(`${id}["${escapeLabel(node.symbol)}"]`);
+      node.children.forEach((child) => {
+        const childId = walk(child);
+        lines.push(`${id} --> ${childId}`);
+      });
+      return id;
+    };
+
+    walk(root);
+    return lines.join("\n");
+  };
+
   const handleGenerate = () => {
     setError(null);
     setDfaError(null);
+    setParseTreeError(null);
     setAllSteps([]);
     setVisibleSteps([]);
     setIsPlaying(false);
     setCurrentStep(0);
+    setParseTreeDiagram("");
     try {
       const g = parseGrammar(grammarInput);
       const collection = buildCanonicalCollection(g);
@@ -174,6 +213,7 @@ export default function ParserLab() {
       setGrammar(null);
       setParsingTable(null);
       setDfaDiagram("");
+      setParseTreeDiagram("");
     }
   };
 
@@ -182,6 +222,8 @@ export default function ParserLab() {
     setIsPlaying(false);
     setCurrentStep(0);
     setVisibleSteps([]);
+    setParseTreeError(null);
+    setParseTreeDiagram("");
 
     try {
       const parseResult = parseString(inputString, grammar, parsingTable);
@@ -190,6 +232,10 @@ export default function ParserLab() {
       setAllSteps(trace);
       setIsAccepted(parseResult.accepted);
       setParseError(parseResult.error);
+
+      if (parseResult.accepted && parseResult.parseTree) {
+        setParseTreeDiagram(buildParseTreeMermaid(parseResult.parseTree));
+      }
       setIsPlaying(true);
     } catch (err: any) {
       setError("Parsing error: " + err.message);
@@ -261,6 +307,44 @@ export default function ParserLab() {
   }, [dfaDiagram, isDark]);
 
   useEffect(() => {
+    if (!parseTreeDiagram || !parseTreeContainerRef.current) return;
+    let isMounted = true;
+
+    setParseTreeScale(1);
+    setParseTreeTranslate({ x: 0, y: 0 });
+    parseTreeLastTranslateRef.current = { x: 0, y: 0 };
+
+    const renderDiagram = async () => {
+      try {
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: isDark ? "dark" : "default",
+          securityLevel: "loose",
+        });
+
+        const renderId = `parse-tree-${parseTreeRenderCount.current++}`;
+        const { svg } = await mermaid.render(renderId, parseTreeDiagram);
+        if (isMounted && parseTreeContainerRef.current) {
+          parseTreeContainerRef.current.innerHTML = svg;
+          setParseTreeError(null);
+        }
+      } catch (renderErr: any) {
+        if (isMounted) {
+          setParseTreeError(
+            renderErr?.message || "Failed to render parse tree diagram",
+          );
+        }
+      }
+    };
+
+    renderDiagram();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [parseTreeDiagram, isDark]);
+
+  useEffect(() => {
     const viewport = dfaViewportRef.current;
     if (!viewport) return;
 
@@ -293,6 +377,39 @@ export default function ParserLab() {
     };
   }, [dfaScale, dfaTranslate]);
 
+  useEffect(() => {
+    const viewport = parseTreeViewportRef.current;
+    if (!viewport) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+
+      const rect = viewport.getBoundingClientRect();
+      const cursorX = event.clientX - rect.left;
+      const cursorY = event.clientY - rect.top;
+
+      const zoomDelta = event.deltaY > 0 ? -0.1 : 0.1;
+      const nextScale = Math.min(6, Math.max(0.25, parseTreeScale + zoomDelta));
+
+      if (nextScale === parseTreeScale) return;
+
+      const scaleRatio = nextScale / parseTreeScale;
+      const nextTranslate = {
+        x: cursorX - (cursorX - parseTreeTranslate.x) * scaleRatio,
+        y: cursorY - (cursorY - parseTreeTranslate.y) * scaleRatio,
+      };
+
+      setParseTreeScale(nextScale);
+      setParseTreeTranslate(nextTranslate);
+      parseTreeLastTranslateRef.current = nextTranslate;
+    };
+
+    viewport.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      viewport.removeEventListener("wheel", handleWheel);
+    };
+  }, [parseTreeScale, parseTreeTranslate]);
+
   const handleDfaPanStart = (event: React.MouseEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     setIsPanning(true);
@@ -317,6 +434,32 @@ export default function ParserLab() {
     setIsPanning(false);
     panStartRef.current = null;
     lastTranslateRef.current = dfaTranslate;
+  };
+
+  const handleParseTreePanStart = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    setIsParseTreePanning(true);
+    parseTreePanStartRef.current = { x: event.clientX, y: event.clientY };
+  };
+
+  const handleParseTreePanMove = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!isParseTreePanning || !parseTreePanStartRef.current) return;
+    const dx = event.clientX - parseTreePanStartRef.current.x;
+    const dy = event.clientY - parseTreePanStartRef.current.y;
+
+    const nextTranslate = {
+      x: parseTreeLastTranslateRef.current.x + dx,
+      y: parseTreeLastTranslateRef.current.y + dy,
+    };
+
+    setParseTreeTranslate(nextTranslate);
+  };
+
+  const handleParseTreePanEnd = () => {
+    if (!isParseTreePanning) return;
+    setIsParseTreePanning(false);
+    parseTreePanStartRef.current = null;
+    parseTreeLastTranslateRef.current = parseTreeTranslate;
   };
 
   const zoomDfaBy = (delta: number) => {
@@ -347,6 +490,34 @@ export default function ParserLab() {
     lastTranslateRef.current = { x: 0, y: 0 };
   };
 
+  const zoomParseTreeBy = (delta: number) => {
+    const viewport = parseTreeViewportRef.current;
+    if (!viewport) return;
+
+    const rect = viewport.getBoundingClientRect();
+    const centerX = rect.width / 2;
+    const centerY = rect.height / 2;
+
+    const nextScale = Math.min(6, Math.max(0.25, parseTreeScale + delta));
+    if (nextScale === parseTreeScale) return;
+
+    const scaleRatio = nextScale / parseTreeScale;
+    const nextTranslate = {
+      x: centerX - (centerX - parseTreeTranslate.x) * scaleRatio,
+      y: centerY - (centerY - parseTreeTranslate.y) * scaleRatio,
+    };
+
+    setParseTreeScale(nextScale);
+    setParseTreeTranslate(nextTranslate);
+    parseTreeLastTranslateRef.current = nextTranslate;
+  };
+
+  const resetParseTreeView = () => {
+    setParseTreeScale(1);
+    setParseTreeTranslate({ x: 0, y: 0 });
+    parseTreeLastTranslateRef.current = { x: 0, y: 0 };
+  };
+
   const handleDownloadDfa = () => {
     if (!dfaContainerRef.current) return;
     const svgElement = dfaContainerRef.current.querySelector("svg");
@@ -362,6 +533,26 @@ export default function ParserLab() {
     const link = document.createElement("a");
     link.href = url;
     link.download = "clr-dfa.svg";
+    link.click();
+
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadParseTree = () => {
+    if (!parseTreeContainerRef.current) return;
+    const svgElement = parseTreeContainerRef.current.querySelector("svg");
+    if (!svgElement) return;
+
+    const serializer = new XMLSerializer();
+    const svgContent = serializer.serializeToString(svgElement);
+    const blob = new Blob([svgContent], {
+      type: "image/svg+xml;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "clr-parse-tree.svg";
     link.click();
 
     URL.revokeObjectURL(url);
@@ -995,97 +1186,216 @@ export default function ParserLab() {
           </div>
         )}
 
-        {visibleSteps.length > 0 && (
-          <div className="card animate-in">
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: "1rem",
-              }}
-            >
-              <h2 style={{ fontSize: "1rem", fontWeight: 600 }}>
-                Parsing Trace
-              </h2>
-              {isComplete &&
-                (isAccepted ? (
-                  <span
-                    className="badge badge-green"
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "0.25rem",
-                    }}
-                  >
-                    <CheckCircle size={14} /> Accepted
-                  </span>
-                ) : (
-                  <span
-                    className="badge badge-red"
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "0.25rem",
-                    }}
-                  >
-                    <AlertCircle size={14} /> {parseError || "Rejected"}
-                  </span>
-                ))}
-            </div>
+      </div>
 
-            <div style={{ overflow: "auto", maxHeight: "300px" }}>
-              <table style={{ minWidth: "100%" }}>
-                <thead>
-                  <tr>
-                    <th style={{ width: "60px" }}>Step</th>
-                    <th style={{ textAlign: "left" }}>Stack</th>
-                    <th style={{ textAlign: "right" }}>Input</th>
-                    <th>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleSteps.map((step, idx) => {
-                    const isLatest = idx === visibleSteps.length - 1;
-                    return (
-                      <tr
-                        key={step.step}
-                        ref={isLatest ? traceEndRef : null}
-                        style={{
-                          background: isLatest
-                            ? "var(--accent-subtle)"
-                            : undefined,
-                          transition: "background 0.3s ease",
-                        }}
-                      >
-                        <td style={{ color: "var(--text-secondary)" }}>
-                          {step.step}
-                        </td>
-                        <td
-                          style={{ fontFamily: "monospace", textAlign: "left" }}
-                        >
-                          {step.stack.join(" ")}
-                        </td>
-                        <td
+      {(visibleSteps.length > 0 || (isAccepted && parseTreeDiagram)) && (
+        <div
+          style={{
+            gridColumn: "1 / -1",
+            display: "grid",
+            gridTemplateColumns:
+              visibleSteps.length > 0 && isAccepted && parseTreeDiagram
+                ? "1fr 1fr"
+                : "1fr",
+            gap: "1rem",
+            alignItems: "start",
+          }}
+        >
+          {visibleSteps.length > 0 && (
+            <div className="card animate-in">
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: "1rem",
+                }}
+              >
+                <h2 style={{ fontSize: "1rem", fontWeight: 600 }}>
+                  Parsing Trace
+                </h2>
+                {isComplete &&
+                  (isAccepted ? (
+                    <span
+                      className="badge badge-green"
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "0.25rem",
+                      }}
+                    >
+                      <CheckCircle size={14} /> Accepted
+                    </span>
+                  ) : (
+                    <span
+                      className="badge badge-red"
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "0.25rem",
+                      }}
+                    >
+                      <AlertCircle size={14} /> {parseError || "Rejected"}
+                    </span>
+                  ))}
+              </div>
+
+              <div style={{ overflow: "auto", maxHeight: "300px" }}>
+                <table style={{ minWidth: "100%" }}>
+                  <thead>
+                    <tr>
+                      <th style={{ width: "60px" }}>Step</th>
+                      <th style={{ textAlign: "left" }}>Stack</th>
+                      <th style={{ textAlign: "right" }}>Input</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleSteps.map((step, idx) => {
+                      const isLatest = idx === visibleSteps.length - 1;
+                      return (
+                        <tr
+                          key={step.step}
+                          ref={isLatest ? traceEndRef : null}
                           style={{
-                            fontFamily: "monospace",
-                            textAlign: "right",
+                            background: isLatest
+                              ? "var(--accent-subtle)"
+                              : undefined,
+                            transition: "background 0.3s ease",
                           }}
                         >
-                          {step.input.join(" ")}
-                        </td>
-                        <td style={{ fontWeight: 600, color: "var(--accent)" }}>
-                          {step.action}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                          <td style={{ color: "var(--text-secondary)" }}>
+                            {step.step}
+                          </td>
+                          <td
+                            style={{
+                              fontFamily: "monospace",
+                              textAlign: "left",
+                            }}
+                          >
+                            {step.stack.join(" ")}
+                          </td>
+                          <td
+                            style={{
+                              fontFamily: "monospace",
+                              textAlign: "right",
+                            }}
+                          >
+                            {step.input.join(" ")}
+                          </td>
+                          <td
+                            style={{
+                              fontWeight: 600,
+                              color: "var(--accent)",
+                            }}
+                          >
+                            {step.action}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          </div>
-        )}
-      </div>
+          )}
+
+          {isAccepted && parseTreeDiagram && (
+            <div className="card animate-in">
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: "1rem",
+                  gap: "0.75rem",
+                  flexWrap: "wrap",
+                }}
+              >
+                <h2 style={{ fontSize: "1rem", fontWeight: 600 }}>
+                  Parse Tree
+                </h2>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.5rem",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <span className="badge badge-blue">Mermaid</span>
+                  <button
+                    className="btn-ghost"
+                    style={{ padding: "0.375rem 0.75rem", borderRadius: "6px" }}
+                    onClick={() => zoomParseTreeBy(0.2)}
+                    title="Zoom in"
+                  >
+                    Zoom In
+                  </button>
+                  <button
+                    className="btn-ghost"
+                    style={{ padding: "0.375rem 0.75rem", borderRadius: "6px" }}
+                    onClick={() => zoomParseTreeBy(-0.2)}
+                    title="Zoom out"
+                  >
+                    Zoom Out
+                  </button>
+                  <button
+                    className="btn-ghost"
+                    style={{ padding: "0.375rem 0.75rem", borderRadius: "6px" }}
+                    onClick={resetParseTreeView}
+                    title="Reset zoom"
+                  >
+                    Reset
+                  </button>
+                  <button
+                    className="btn-ghost"
+                    style={{ padding: "0.375rem 0.75rem", borderRadius: "6px" }}
+                    onClick={handleDownloadParseTree}
+                    title="Download parse tree as SVG"
+                  >
+                    Download
+                  </button>
+                </div>
+              </div>
+
+              {parseTreeError ? (
+                <div className="alert alert-error">
+                  <AlertCircle size={16} />
+                  <span>{parseTreeError}</span>
+                </div>
+              ) : (
+                <div
+                  ref={parseTreeViewportRef}
+                  style={{
+                    overflow: "auto",
+                    border: "1px solid var(--border)",
+                    borderRadius: "8px",
+                    padding: "0.75rem",
+                    background: "var(--bg-primary)",
+                    minHeight: "240px",
+                    cursor: isParseTreePanning ? "grabbing" : "grab",
+                    userSelect: "none",
+                  }}
+                  onMouseDown={handleParseTreePanStart}
+                  onMouseMove={handleParseTreePanMove}
+                  onMouseUp={handleParseTreePanEnd}
+                  onMouseLeave={handleParseTreePanEnd}
+                >
+                  <div
+                    ref={parseTreeContainerRef}
+                    style={{
+                      transform: `translate(${parseTreeTranslate.x}px, ${parseTreeTranslate.y}px) scale(${parseTreeScale})`,
+                      transformOrigin: "0 0",
+                      width: "fit-content",
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
