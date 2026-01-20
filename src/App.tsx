@@ -96,7 +96,6 @@ function App() {
 
             {/* Tabs + Theme Toggle */}
             <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-              {/* Tabs */}
               <div
                 style={{
                   display: "flex",
@@ -120,7 +119,6 @@ function App() {
                 />
               </div>
 
-              {/* Theme Toggle */}
               <button
                 onClick={toggle}
                 style={{
@@ -162,27 +160,44 @@ function App() {
         >
           <div
             className="container"
-            style={{
-              textAlign: "center",
-              display: "flex",
-              flexDirection: "column",
-              gap: "0.5rem",
-            }}
+            style={{ display: "grid", gap: "0.75rem" }}
           >
-            <p style={{ fontSize: "0.875rem", color: "var(--text-secondary)" }}>
-              Compiler Design Project • AASTU • 2026 GC
-            </p>
-            <p style={{ fontSize: "0.875rem", color: "var(--text-secondary)" }}>
-              Source Code:{" "}
-              <a
-                href="https://github.com/Tesfamichael12/compiler-design-clr-parsing"
-                target="_blank"
-                rel="noreferrer"
-                style={{ color: "var(--accent)" }}
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: "0.5rem",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <p
+                style={{
+                  fontSize: "0.875rem",
+                  color: "var(--text-secondary)",
+                  margin: 0,
+                }}
               >
-                https://github.com/Tesfamichael12/compiler-design-clr-parsing
-              </a>
-            </p>
+                Compiler Design Project • AASTU • 2026 GC
+              </p>
+              <p
+                style={{
+                  fontSize: "0.875rem",
+                  color: "var(--text-secondary)",
+                  margin: 0,
+                }}
+              >
+                Source Code:{" "}
+                <a
+                  href="https://github.com/Tesfamichael12/compiler-design-clr-parsing"
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: "var(--accent)" }}
+                >
+                  https://github.com/Tesfamichael12/compiler-design-clr-parsing
+                </a>
+              </p>
+            </div>
             <div
               style={{ fontSize: "0.875rem", color: "var(--text-secondary)" }}
             >
@@ -192,11 +207,10 @@ function App() {
               <div style={{ display: "grid", gap: "0.25rem" }}>
                 <div>1. Seid Hulle — ETS1219/15</div>
                 <div>2. Tesfamichael Tafere — ETS1303/15</div>
-                <div>3. Tsegaye Berhe — ETS1325/15</div>
-                <div>4. Wendmagegn Tajura — ETS1343/15</div>
-                <div>5. Yabets Maregn — ETS1351/15</div>
-                <div>6. Yonas Solomon — ETS1462/15</div>
-                <div>7. Zeal Tesfaye — ETS1788/14</div>
+                <div>3. Wendmagegn Tajura — ETS1343/15</div>
+                <div>4. Yabets Maregn — ETS1351/15</div>
+                <div>5. Yonas Solomon — ETS1462/15</div>
+                <div>6. Zeal Tesfaye — ETS1788/14</div>
               </div>
             </div>
           </div>
