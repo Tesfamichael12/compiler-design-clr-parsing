@@ -1,48 +1,167 @@
-import { useState, useEffect, useRef } from 'react';
-import { Grammar, parseGrammar } from '../core/Grammar';
-import { buildParsingTable, type ParsingTable } from '../core/Table';
-import { parseString, type ParseStep } from '../core/Parser';
-import { AlertCircle, CheckCircle, Play, Zap, FastForward, Pause, SkipForward, RotateCcw } from 'lucide-react';
+import { useEffect, useRef, useState } from "react";
+import mermaid from "mermaid";
+import { Grammar, parseGrammar } from "../core/Grammar";
+import {
+  buildCanonicalCollection,
+  type CanonicalCollection,
+} from "../core/Items";
+import {
+  ActionType,
+  buildParsingTable,
+  type ParsingTable,
+} from "../core/Table";
+import { parseString, type ParseStep } from "../core/Parser";
+import {
+  AlertCircle,
+  CheckCircle,
+  FastForward,
+  Pause,
+  Play,
+  RotateCcw,
+  SkipForward,
+  Zap,
+} from "lucide-react";
+import { useTheme } from "../App";
 
 const SAMPLES = {
-  simple: { grammar: `S -> C C\nC -> c C | d`, input: 'c c d d', label: 'Simple' },
-  assignment: { grammar: `S -> L = R | R\nL -> * R | i\nR -> L`, input: '* i = i', label: 'Assignment' },
-  expression: { grammar: `E -> E + T | T\nT -> T * F | F\nF -> ( E ) | i`, input: 'i + i * i', label: 'Expression' }
+  simple: {
+    grammar: `S -> C C\nC -> c C | d`,
+    input: "c c d d",
+    label: "Simple",
+  },
+  assignment: {
+    grammar: `S -> L = R | R\nL -> * R | i\nR -> L`,
+    input: "* i = i",
+    label: "Assignment",
+  },
+  expression: {
+    grammar: `E -> E + T | T\nT -> T * F | F\nF -> ( E ) | i`,
+    input: "i + i * i",
+    label: "Expression",
+  },
 };
 
 export default function ParserLab() {
+  const { isDark } = useTheme();
   const [grammarInput, setGrammarInput] = useState(SAMPLES.simple.grammar);
   const [inputString, setInputString] = useState(SAMPLES.simple.input);
-  
+
   const [grammar, setGrammar] = useState<Grammar | null>(null);
   const [parsingTable, setParsingTable] = useState<ParsingTable | null>(null);
+  const [dfaDiagram, setDfaDiagram] = useState("");
+  const [dfaError, setDfaError] = useState<string | null>(null);
+
   const [allSteps, setAllSteps] = useState<ParseStep[]>([]);
   const [visibleSteps, setVisibleSteps] = useState<ParseStep[]>([]);
   const [isAccepted, setIsAccepted] = useState(false);
   const [parseError, setParseError] = useState<string | undefined>();
   const [error, setError] = useState<string | null>(null);
-  
-  // Animation state
+
   const [isPlaying, setIsPlaying] = useState(false);
   const [speed, setSpeed] = useState(500);
   const [currentStep, setCurrentStep] = useState(0);
+
   const animationRef = useRef<number | null>(null);
   const traceEndRef = useRef<HTMLTableRowElement | null>(null);
+  const dfaContainerRef = useRef<HTMLDivElement | null>(null);
+  const dfaRenderCount = useRef(0);
+
+  const buildDfaMermaid = (
+    collection: CanonicalCollection,
+    table: ParsingTable,
+  ) => {
+    const lines: string[] = ["stateDiagram-v2", "direction LR", "[*] --> I0"];
+    const escapeLabel = (value: string) => value.replace(/"/g, '\\"');
+
+    collection.states.forEach((state, index) => {
+      const items = state.map((item) => item.toString());
+      const label = `I${index}\\n${items.join("\\n")}`;
+      lines.push(`state \"${escapeLabel(label)}\" as I${index}`);
+    });
+
+    const transitions = Array.from(collection.transitions.entries())
+      .sort(([a], [b]) => a - b)
+      .map(
+        ([from, map]) =>
+          [
+            from,
+            Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b)),
+          ] as const,
+      );
+
+    transitions.forEach(([from, edges]) => {
+      edges.forEach(([symbol, to]) => {
+        lines.push(`I${from} --> I${to}: ${symbol}`);
+      });
+    });
+
+    const acceptStates: number[] = [];
+    const reduceStates: number[] = [];
+    const shiftStates: number[] = [];
+
+    table.action.forEach((actions, stateIndex) => {
+      let hasShift = false;
+      let hasReduce = false;
+      let hasAccept = false;
+
+      actions.forEach((action) => {
+        if (action.type === ActionType.ACCEPT) hasAccept = true;
+        if (action.type === ActionType.REDUCE) hasReduce = true;
+        if (action.type === ActionType.SHIFT) hasShift = true;
+      });
+
+      if (hasAccept) {
+        acceptStates.push(stateIndex);
+      } else if (hasReduce) {
+        reduceStates.push(stateIndex);
+      } else if (hasShift) {
+        shiftStates.push(stateIndex);
+      }
+    });
+
+    lines.push(
+      "classDef shift fill:var(--accent),color:white,stroke:var(--accent-dark),stroke-width:1px;",
+    );
+    lines.push(
+      "classDef reduce fill:var(--warning),color:#111827,stroke:#ef4444,stroke-width:1px;",
+    );
+    lines.push(
+      "classDef accept fill:var(--success),color:white,stroke:#16a34a,stroke-width:1px;",
+    );
+
+    if (shiftStates.length > 0) {
+      lines.push(`class ${shiftStates.map((i) => `I${i}`).join(", ")} shift`);
+    }
+    if (reduceStates.length > 0) {
+      lines.push(`class ${reduceStates.map((i) => `I${i}`).join(", ")} reduce`);
+    }
+    if (acceptStates.length > 0) {
+      lines.push(`class ${acceptStates.map((i) => `I${i}`).join(", ")} accept`);
+    }
+
+    return lines.join("\n");
+  };
 
   const handleGenerate = () => {
     setError(null);
+    setDfaError(null);
     setAllSteps([]);
     setVisibleSteps([]);
     setIsPlaying(false);
     setCurrentStep(0);
     try {
       const g = parseGrammar(grammarInput);
+      const collection = buildCanonicalCollection(g);
+      const table = buildParsingTable(g);
+
       setGrammar(g);
-      setParsingTable(buildParsingTable(g));
+      setParsingTable(table);
+      setDfaDiagram(buildDfaMermaid(collection, table));
     } catch (err: any) {
-      setError(err.message || 'Failed to parse grammar');
+      setError(err.message || "Failed to parse grammar");
       setGrammar(null);
       setParsingTable(null);
+      setDfaDiagram("");
     }
   };
 
@@ -51,15 +170,17 @@ export default function ParserLab() {
     setIsPlaying(false);
     setCurrentStep(0);
     setVisibleSteps([]);
-    
+
     try {
-      const result = parseString(inputString, grammar, parsingTable);
-      setAllSteps(result.steps);
-      setIsAccepted(result.accepted);
-      setParseError(result.error);
+      const parseResult = parseString(inputString, grammar, parsingTable);
+      const trace = parseResult.steps.map((s, i) => ({ ...s, step: i + 1 }));
+
+      setAllSteps(trace);
+      setIsAccepted(parseResult.accepted);
+      setParseError(parseResult.error);
       setIsPlaying(true);
     } catch (err: any) {
-      setError('Parsing error: ' + err.message);
+      setError("Parsing error: " + err.message);
     }
   };
 
@@ -76,12 +197,11 @@ export default function ParserLab() {
     setVisibleSteps([]);
   };
 
-  // Animation effect
   useEffect(() => {
     if (isPlaying && currentStep < allSteps.length) {
       animationRef.current = window.setTimeout(() => {
-        setVisibleSteps(prev => [...prev, allSteps[currentStep]]);
-        setCurrentStep(prev => prev + 1);
+        setVisibleSteps((prev) => [...prev, allSteps[currentStep]]);
+        setCurrentStep((prev) => prev + 1);
       }, speed);
     } else if (currentStep >= allSteps.length && allSteps.length > 0) {
       setIsPlaying(false);
@@ -92,22 +212,55 @@ export default function ParserLab() {
     };
   }, [isPlaying, currentStep, allSteps, speed]);
 
-  // Auto-scroll to latest step
+  useEffect(() => {
+    if (!dfaDiagram || !dfaContainerRef.current) return;
+    let isMounted = true;
+
+    const renderDiagram = async () => {
+      try {
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: isDark ? "dark" : "default",
+          securityLevel: "loose",
+        });
+
+        const renderId = `dfa-${dfaRenderCount.current++}`;
+        const { svg } = await mermaid.render(renderId, dfaDiagram);
+        if (isMounted && dfaContainerRef.current) {
+          dfaContainerRef.current.innerHTML = svg;
+          setDfaError(null);
+        }
+      } catch (renderErr: any) {
+        if (isMounted) {
+          setDfaError(renderErr?.message || "Failed to render DFA diagram");
+        }
+      }
+    };
+
+    renderDiagram();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [dfaDiagram, isDark]);
+
   useEffect(() => {
     if (traceEndRef.current) {
-      traceEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      traceEndRef.current.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+      });
     }
   }, [visibleSteps]);
 
   const togglePlay = () => {
-    // If simulation is complete, restart it
     if (currentStep >= allSteps.length && allSteps.length > 0) {
       restartSimulation();
     } else {
       setIsPlaying(!isPlaying);
     }
   };
-  
+
   const skipToEnd = () => {
     setIsPlaying(false);
     setVisibleSteps(allSteps);
@@ -116,34 +269,45 @@ export default function ParserLab() {
 
   const stepForward = () => {
     if (currentStep < allSteps.length) {
-      setVisibleSteps(prev => [...prev, allSteps[currentStep]]);
-      setCurrentStep(prev => prev + 1);
+      setVisibleSteps((prev) => [...prev, allSteps[currentStep]]);
+      setCurrentStep((prev) => prev + 1);
     }
   };
 
-  useEffect(() => { handleGenerate(); }, []);
+  useEffect(() => {
+    handleGenerate();
+  }, []);
 
   const isSimulating = allSteps.length > 0;
   const isComplete = currentStep >= allSteps.length && allSteps.length > 0;
 
-  // Get current step for highlighting
-  const currentDisplayStep = visibleSteps.length > 0 ? visibleSteps[visibleSteps.length - 1] : null;
-
   return (
-    <div style={{ 
-      display: 'grid', 
-      gridTemplateColumns: '1fr 1fr', /* both panels share width */
-      gap: '1.5rem', 
-      alignItems: 'start',
-      width: '100%'
-    }}>
-      {/* Left Panel */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-        {/* Grammar Input */}
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr",
+        gap: "1.5rem",
+        alignItems: "start",
+        width: "100%",
+      }}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
         <div className="card">
-          <h2 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '1rem' }}>Grammar</h2>
-          
-          <label style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--text-secondary)', display: 'block', marginBottom: '0.5rem' }}>
+          <h2
+            style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "1rem" }}
+          >
+            Grammar
+          </h2>
+
+          <label
+            style={{
+              fontSize: "0.75rem",
+              fontWeight: 500,
+              color: "var(--text-secondary)",
+              display: "block",
+              marginBottom: "0.5rem",
+            }}
+          >
             Productions
           </label>
           <textarea
@@ -153,102 +317,155 @@ export default function ParserLab() {
             placeholder="S -> A A"
             spellCheck={false}
           />
-          
-          <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '0.5rem' }}>
+
+          <p
+            style={{
+              fontSize: "0.75rem",
+              color: "var(--text-tertiary)",
+              marginTop: "0.5rem",
+            }}
+          >
             Format: LHS → RHS separated by spaces
           </p>
 
-          <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
+          <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
             {Object.entries(SAMPLES).map(([key, { label }]) => (
               <button
                 key={key}
                 onClick={() => loadSample(key as keyof typeof SAMPLES)}
                 className="btn-secondary"
-                style={{ flex: 1, padding: '0.5rem', fontSize: '0.75rem' }}
+                style={{ flex: 1, padding: "0.5rem", fontSize: "0.75rem" }}
               >
                 {label}
               </button>
             ))}
           </div>
 
-          <button 
-            onClick={handleGenerate} 
-            className="btn" 
-            style={{ width: '100%', marginTop: '1rem' }}
+          <button
+            onClick={handleGenerate}
+            className="btn"
+            style={{ width: "100%", marginTop: "1rem" }}
           >
             <Zap size={16} />
             Generate Table
           </button>
 
           {error && (
-            <div className="alert alert-error" style={{ marginTop: '1rem' }}>
+            <div className="alert alert-error" style={{ marginTop: "1rem" }}>
               <AlertCircle size={16} />
               <span>{error}</span>
             </div>
           )}
         </div>
 
-        {/* Parse Input */}
         {parsingTable && (
           <div className="card animate-in">
-            <h2 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Play size={16} style={{ color: 'var(--accent)' }} />
+            <h2
+              style={{
+                fontSize: "1rem",
+                fontWeight: 600,
+                marginBottom: "1rem",
+                display: "flex",
+                alignItems: "center",
+                gap: "0.5rem",
+              }}
+            >
+              <Play size={16} style={{ color: "var(--accent)" }} />
               Simulation
             </h2>
-            
-            <label style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--text-secondary)', display: 'block', marginBottom: '0.5rem' }}>
+
+            <label
+              style={{
+                fontSize: "0.75rem",
+                fontWeight: 500,
+                color: "var(--text-secondary)",
+                display: "block",
+                marginBottom: "0.5rem",
+              }}
+            >
               Input String
             </label>
-            <div style={{ position: 'relative' }}>
+            <div style={{ position: "relative" }}>
               <input
                 className="input"
                 value={inputString}
                 onChange={(e) => setInputString(e.target.value)}
                 placeholder="e.g. c c d d"
-                style={{ paddingRight: '2.5rem' }}
+                style={{ paddingRight: "2.5rem" }}
               />
-              <span style={{ 
-                position: 'absolute', 
-                right: '0.75rem', 
-                top: '50%', 
-                transform: 'translateY(-50%)',
-                fontSize: '0.75rem',
-                color: 'var(--text-tertiary)',
-                background: 'var(--bg-tertiary)',
-                padding: '0.125rem 0.375rem',
-                borderRadius: '4px'
-              }}>$</span>
+              <span
+                style={{
+                  position: "absolute",
+                  right: "0.75rem",
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  fontSize: "0.75rem",
+                  color: "var(--text-tertiary)",
+                  background: "var(--bg-tertiary)",
+                  padding: "0.125rem 0.375rem",
+                  borderRadius: "4px",
+                }}
+              >
+                $
+              </span>
             </div>
 
-            <button 
-              onClick={handleParse} 
-              className="btn" 
-              style={{ width: '100%', marginTop: '1rem' }}
+            <button
+              onClick={handleParse}
+              className="btn"
+              style={{ width: "100%", marginTop: "1rem" }}
             >
               <Play size={16} />
               Parse String
             </button>
 
-            {/* Playback Controls */}
             {isSimulating && (
-              <div style={{ marginTop: '1rem', padding: '1rem', background: 'var(--bg-tertiary)', borderRadius: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
-                  <span style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--text-secondary)' }}>
+              <div
+                style={{
+                  marginTop: "1rem",
+                  padding: "1rem",
+                  background: "var(--bg-tertiary)",
+                  borderRadius: "8px",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    marginBottom: "0.75rem",
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: "0.75rem",
+                      fontWeight: 500,
+                      color: "var(--text-secondary)",
+                    }}
+                  >
                     Step {currentStep} / {allSteps.length}
                   </span>
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <div style={{ display: "flex", gap: "0.5rem" }}>
                     <button
                       onClick={togglePlay}
                       className="btn-ghost"
-                      style={{ padding: '0.375rem', borderRadius: '6px' }}
-                      title={isComplete ? 'Restart' : isPlaying ? 'Pause' : 'Play'}
+                      style={{ padding: "0.375rem", borderRadius: "6px" }}
+                      title={
+                        isComplete ? "Restart" : isPlaying ? "Pause" : "Play"
+                      }
                     >
-                      {isComplete ? <RotateCcw size={16} /> : isPlaying ? <Pause size={16} /> : <Play size={16} />}
+                      {isComplete ? (
+                        <RotateCcw size={16} />
+                      ) : isPlaying ? (
+                        <Pause size={16} />
+                      ) : (
+                        <Play size={16} />
+                      )}
                     </button>
                     <button
                       onClick={stepForward}
                       className="btn-ghost"
-                      style={{ padding: '0.375rem', borderRadius: '6px' }}
+                      style={{ padding: "0.375rem", borderRadius: "6px" }}
                       title="Step forward"
                       disabled={isComplete}
                     >
@@ -257,16 +474,23 @@ export default function ParserLab() {
                     <button
                       onClick={skipToEnd}
                       className="btn-ghost"
-                      style={{ padding: '0.375rem', borderRadius: '6px' }}
+                      style={{ padding: "0.375rem", borderRadius: "6px" }}
                       title="Skip to end"
                     >
                       <FastForward size={16} />
                     </button>
                   </div>
                 </div>
-                
+
                 <div className="speed-control">
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>Speed:</span>
+                  <span
+                    style={{
+                      fontSize: "0.75rem",
+                      color: "var(--text-tertiary)",
+                    }}
+                  >
+                    Speed:
+                  </span>
                   <input
                     type="range"
                     min="100"
@@ -275,183 +499,313 @@ export default function ParserLab() {
                     value={1100 - speed}
                     onChange={(e) => setSpeed(1100 - parseInt(e.target.value))}
                   />
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', minWidth: '40px' }}>
-                    {speed < 300 ? 'Fast' : speed < 600 ? 'Med' : 'Slow'}
+                  <span
+                    style={{
+                      fontSize: "0.75rem",
+                      color: "var(--text-tertiary)",
+                      minWidth: "40px",
+                    }}
+                  >
+                    {speed < 300 ? "Fast" : speed < 600 ? "Med" : "Slow"}
                   </span>
                 </div>
               </div>
             )}
           </div>
         )}
-
-        {/* Current Step Detail */}
-        {currentDisplayStep && (
-          <div className="card animate-in" style={{ background: 'var(--accent-subtle)', borderColor: 'var(--accent)' }}>
-            <h3 style={{ fontSize: '0.875rem', fontWeight: 600, marginBottom: '0.75rem', color: 'var(--accent)' }}>Current Action</h3>
-            <div style={{
-              fontSize: '1.25rem',
-              fontWeight: 700,
-              fontFamily: 'monospace',
-              marginBottom: '1rem',
-              color: 'var(--text-primary)'
-            }}>{currentDisplayStep.action}</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              {/* Stack visualization */}
-              <div>
-                <label style={{ fontSize: '0.625rem', fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Stack</label>
-                <div style={{
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  gap: '0.25rem',
-                  marginTop: '0.25rem'
-                }}>
-                  {currentDisplayStep.stack.map((item, idx) => (
-                    <span
-                      key={idx}
-                      style={{
-                        padding: '0.25rem 0.5rem',
-                        background: idx === currentDisplayStep.stack.length - 1 ? 'var(--accent)' : 'var(--bg-secondary)',
-                        color: idx === currentDisplayStep.stack.length - 1 ? 'white' : 'var(--text-primary)',
-                        borderRadius: '4px',
-                        fontSize: '0.875rem',
-                        fontFamily: 'monospace',
-                        fontWeight: 500,
-                        border: '1px solid var(--border)'
-                      }}
-                    >
-                      {item}
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              {/* Input visualization */}
-              <div>
-                <label style={{ fontSize: '0.625rem', fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Input</label>
-                <div style={{ display: 'flex', gap: '1rem', marginTop: '0.25rem' }}>
-                  {/* Processed part */}
-                  <div>
-                    <label style={{ fontSize: '0.5rem', color: 'var(--text-secondary)' }}>Processed</label>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
-                      {(() => {
-                        const tokens = inputString.trim().split(/\s+/);
-                        const processed = tokens.slice(0, tokens.length - currentDisplayStep.input.length);
-                        return processed.map((tok, i) => (
-                          <span key={i} style={{
-                            padding: '0.2rem 0.4rem',
-                            background: 'var(--success)',
-                            color: 'white',
-                            borderRadius: '4px',
-                            fontSize: '0.75rem',
-                            fontFamily: 'monospace'
-                          }}>{tok}</span>
-                        ));
-                      })()}
-                    </div>
-                  </div>
-                  {/* Remaining part */}
-                  <div>
-                    <label style={{ fontSize: '0.5rem', color: 'var(--text-secondary)' }}>Remaining</label>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
-                      {currentDisplayStep.input.map((item, idx) => (
-                        <span
-                          key={idx}
-                          style={{
-                            padding: '0.25rem 0.5rem',
-                            background: idx === 0 ? 'var(--warning)' : 'var(--bg-secondary)',
-                            color: idx === 0 ? 'white' : 'var(--text-primary)',
-                            borderRadius: '4px',
-                            fontSize: '0.875rem',
-                            fontFamily: 'monospace',
-                            fontWeight: 500,
-                            border: '1px solid var(--border)'
-                          }}
-                        >
-                          {item}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
 
-      {/* Right Panel */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', minWidth: 0 }}>
-        {/* Parsing Table */}
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: "1rem",
+          minWidth: 0,
+        }}
+      >
+        {dfaDiagram && (
+          <div className="card animate-in">
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: "1rem",
+              }}
+            >
+              <h2 style={{ fontSize: "1rem", fontWeight: 600 }}>LR(1) DFA</h2>
+              <span className="badge badge-blue">Item-set Automaton</span>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                gap: "1rem",
+                flexWrap: "wrap",
+                fontSize: "0.75rem",
+                marginBottom: "0.75rem",
+              }}
+            >
+              <span
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.375rem",
+                }}
+              >
+                <span
+                  style={{
+                    width: "10px",
+                    height: "10px",
+                    borderRadius: "50%",
+                    background: "var(--accent)",
+                  }}
+                />
+                Shift
+              </span>
+              <span
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.375rem",
+                }}
+              >
+                <span
+                  style={{
+                    width: "10px",
+                    height: "10px",
+                    borderRadius: "50%",
+                    background: "var(--warning)",
+                  }}
+                />
+                Reduce
+              </span>
+              <span
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.375rem",
+                }}
+              >
+                <span
+                  style={{
+                    width: "10px",
+                    height: "10px",
+                    borderRadius: "50%",
+                    background: "var(--success)",
+                  }}
+                />
+                Accept
+              </span>
+            </div>
+
+            {dfaError ? (
+              <div className="alert alert-error">
+                <AlertCircle size={16} />
+                <span>{dfaError}</span>
+              </div>
+            ) : (
+              <div
+                ref={dfaContainerRef}
+                style={{
+                  overflow: "auto",
+                  border: "1px solid var(--border)",
+                  borderRadius: "8px",
+                  padding: "0.75rem",
+                  background: "var(--bg-primary)",
+                  minHeight: "240px",
+                }}
+              />
+            )}
+          </div>
+        )}
+
         {parsingTable && grammar && (
           <div className="card animate-in">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-              <h2 style={{ fontSize: '1rem', fontWeight: 600 }}>CLR(1) Table</h2>
-              <div style={{ display: 'flex', gap: '1rem', fontSize: '0.75rem' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
-                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent)' }}></span>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: "1rem",
+                flexWrap: "wrap",
+                gap: "0.5rem",
+              }}
+            >
+              <h2 style={{ fontSize: "1rem", fontWeight: 600 }}>
+                CLR(1) Table
+              </h2>
+              <div
+                style={{ display: "flex", gap: "1rem", fontSize: "0.75rem" }}
+              >
+                <span
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.375rem",
+                  }}
+                >
+                  <span
+                    style={{
+                      width: "8px",
+                      height: "8px",
+                      borderRadius: "50%",
+                      background: "var(--accent)",
+                    }}
+                  />
                   Shift
                 </span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
-                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--warning)' }}></span>
+                <span
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.375rem",
+                  }}
+                >
+                  <span
+                    style={{
+                      width: "8px",
+                      height: "8px",
+                      borderRadius: "50%",
+                      background: "var(--warning)",
+                    }}
+                  />
                   Reduce
                 </span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
-                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--success)' }}></span>
+                <span
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.375rem",
+                  }}
+                >
+                  <span
+                    style={{
+                      width: "8px",
+                      height: "8px",
+                      borderRadius: "50%",
+                      background: "var(--success)",
+                    }}
+                  />
                   Accept
                 </span>
               </div>
             </div>
 
-            <div style={{ overflow: 'auto', maxHeight: '400px', border: '1px solid var(--border)', borderRadius: '8px' }}>
-              <table style={{ minWidth: '100%' }}>
+            <div
+              style={{
+                overflow: "auto",
+                maxHeight: "400px",
+                border: "1px solid var(--border)",
+                borderRadius: "8px",
+              }}
+            >
+              <table style={{ minWidth: "100%" }}>
                 <thead>
                   <tr>
-                    <th rowSpan={2} style={{ borderRight: '1px solid var(--border)' }}>State</th>
-                    <th colSpan={Array.from(grammar.terminals).length + 1} style={{ borderRight: '1px solid var(--border)' }}>Action</th>
-                    <th colSpan={Array.from(grammar.nonTerminals).length}>Goto</th>
+                    <th
+                      rowSpan={2}
+                      style={{ borderRight: "1px solid var(--border)" }}
+                    >
+                      State
+                    </th>
+                    <th
+                      colSpan={Array.from(grammar.terminals).length + 1}
+                      style={{ borderRight: "1px solid var(--border)" }}
+                    >
+                      Action
+                    </th>
+                    <th colSpan={Array.from(grammar.nonTerminals).length}>
+                      Goto
+                    </th>
                   </tr>
                   <tr>
-                    {Array.from(grammar.terminals).map(t => <th key={t}>{t}</th>)}
-                    <th style={{ borderRight: '1px solid var(--border)' }}>$</th>
+                    {Array.from(grammar.terminals).map((t) => (
+                      <th key={t}>{t}</th>
+                    ))}
+                    <th style={{ borderRight: "1px solid var(--border)" }}>
+                      $
+                    </th>
                     {Array.from(grammar.nonTerminals)
-                      .filter(nt => nt !== grammar.startSymbol.name)
-                      .map(nt => <th key={nt}>{nt}</th>)}
+                      .filter((nt) => nt !== grammar.startSymbol.name)
+                      .map((nt) => (
+                        <th key={nt}>{nt}</th>
+                      ))}
                   </tr>
                 </thead>
                 <tbody>
                   {parsingTable.states.map((_, i) => (
                     <tr key={i}>
-                      <td style={{ fontFamily: 'monospace', borderRight: '1px solid var(--border)', background: 'var(--bg-tertiary)' }}>{i}</td>
-                      
-                      {Array.from(grammar.terminals).map(t => {
+                      <td
+                        style={{
+                          fontFamily: "monospace",
+                          borderRight: "1px solid var(--border)",
+                          background: "var(--bg-tertiary)",
+                        }}
+                      >
+                        {i}
+                      </td>
+
+                      {Array.from(grammar.terminals).map((t) => {
                         const act = parsingTable.action.get(i)?.get(t);
                         return (
                           <td key={t}>
                             {act && (
-                              <span style={{ color: act.type === 'SHIFT' ? 'var(--accent)' : 'var(--warning)' }}>
-                                {act.type === 'SHIFT' ? `s${act.value}` : `r${act.productionStr}`}
+                              <span
+                                style={{
+                                  color:
+                                    act.type === "SHIFT"
+                                      ? "var(--accent)"
+                                      : "var(--warning)",
+                                }}
+                              >
+                                {act.type === "SHIFT"
+                                  ? `s${act.value}`
+                                  : `r${act.productionStr}`}
                               </span>
                             )}
                           </td>
                         );
                       })}
-                      
-                      <td style={{ borderRight: '1px solid var(--border)' }}>
+
+                      <td style={{ borderRight: "1px solid var(--border)" }}>
                         {(() => {
-                          const act = parsingTable.action.get(i)?.get('$');
+                          const act = parsingTable.action.get(i)?.get("$");
                           if (!act) return null;
-                          if (act.type === 'ACCEPT') return <span style={{ color: 'var(--success)', fontWeight: 600 }}>ACC</span>;
-                          return <span style={{ color: act.type === 'SHIFT' ? 'var(--accent)' : 'var(--warning)' }}>
-                            {act.type === 'SHIFT' ? `s${act.value}` : `r${act.productionStr}`}
-                          </span>;
+                          if (act.type === "ACCEPT") {
+                            return (
+                              <span
+                                style={{
+                                  color: "var(--success)",
+                                  fontWeight: 600,
+                                }}
+                              >
+                                ACC
+                              </span>
+                            );
+                          }
+                          return (
+                            <span
+                              style={{
+                                color:
+                                  act.type === "SHIFT"
+                                    ? "var(--accent)"
+                                    : "var(--warning)",
+                              }}
+                            >
+                              {act.type === "SHIFT"
+                                ? `s${act.value}`
+                                : `r${act.productionStr}`}
+                            </span>
+                          );
                         })()}
                       </td>
 
                       {Array.from(grammar.nonTerminals)
-                        .filter(nt => nt !== grammar.startSymbol.name)
-                        .map(nt => (
+                        .filter((nt) => nt !== grammar.startSymbol.name)
+                        .map((nt) => (
                           <td key={nt} style={{ fontWeight: 500 }}>
-                            {parsingTable.goto.get(i)?.get(nt) ?? ''}
+                            {parsingTable.goto.get(i)?.get(nt) ?? ""}
                           </td>
                         ))}
                     </tr>
@@ -462,31 +816,52 @@ export default function ParserLab() {
           </div>
         )}
 
-        {/* Parse Result */}
         {visibleSteps.length > 0 && (
           <div className="card animate-in">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-              <h2 style={{ fontSize: '1rem', fontWeight: 600 }}>Parsing Trace</h2>
-              {isComplete && (
-                isAccepted ? (
-                  <span className="badge badge-green" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: "1rem",
+              }}
+            >
+              <h2 style={{ fontSize: "1rem", fontWeight: 600 }}>
+                Parsing Trace
+              </h2>
+              {isComplete &&
+                (isAccepted ? (
+                  <span
+                    className="badge badge-green"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "0.25rem",
+                    }}
+                  >
                     <CheckCircle size={14} /> Accepted
                   </span>
                 ) : (
-                  <span className="badge badge-red" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                    <AlertCircle size={14} /> {parseError || 'Rejected'}
+                  <span
+                    className="badge badge-red"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "0.25rem",
+                    }}
+                  >
+                    <AlertCircle size={14} /> {parseError || "Rejected"}
                   </span>
-                )
-              )}
+                ))}
             </div>
 
-            <div style={{ overflow: 'auto', maxHeight: '300px' }}>
-              <table style={{ minWidth: '100%' }}>
+            <div style={{ overflow: "auto", maxHeight: "300px" }}>
+              <table style={{ minWidth: "100%" }}>
                 <thead>
                   <tr>
-                    <th style={{ width: '60px' }}>Step</th>
-                    <th style={{ textAlign: 'left' }}>Stack</th>
-                    <th style={{ textAlign: 'right' }}>Input</th>
+                    <th style={{ width: "60px" }}>Step</th>
+                    <th style={{ textAlign: "left" }}>Stack</th>
+                    <th style={{ textAlign: "right" }}>Input</th>
                     <th>Action</th>
                   </tr>
                 </thead>
@@ -494,20 +869,35 @@ export default function ParserLab() {
                   {visibleSteps.map((step, idx) => {
                     const isLatest = idx === visibleSteps.length - 1;
                     return (
-                      <tr 
-                        key={step.step} 
+                      <tr
+                        key={step.step}
                         ref={isLatest ? traceEndRef : null}
-                        style={{ 
-                          background: isLatest ? 'var(--accent-subtle)' : undefined,
-                          transition: 'background 0.3s ease'
+                        style={{
+                          background: isLatest
+                            ? "var(--accent-subtle)"
+                            : undefined,
+                          transition: "background 0.3s ease",
                         }}
                       >
-                        <td style={{ color: 'var(--text-secondary)' }}>{step.step}</td>
-                        <td style={{ fontFamily: 'monospace', textAlign: 'left' }}>
-                          {step.stack.join(' ')}
+                        <td style={{ color: "var(--text-secondary)" }}>
+                          {step.step}
                         </td>
-                        <td style={{ fontFamily: 'monospace', textAlign: 'right' }}>{step.input.join(' ')}</td>
-                        <td style={{ fontWeight: 600, color: 'var(--accent)' }}>{step.action}</td>
+                        <td
+                          style={{ fontFamily: "monospace", textAlign: "left" }}
+                        >
+                          {step.stack.join(" ")}
+                        </td>
+                        <td
+                          style={{
+                            fontFamily: "monospace",
+                            textAlign: "right",
+                          }}
+                        >
+                          {step.input.join(" ")}
+                        </td>
+                        <td style={{ fontWeight: 600, color: "var(--accent)" }}>
+                          {step.action}
+                        </td>
                       </tr>
                     );
                   })}
