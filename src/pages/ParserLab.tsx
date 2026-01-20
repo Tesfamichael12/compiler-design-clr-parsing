@@ -64,7 +64,14 @@ export default function ParserLab() {
   const animationRef = useRef<number | null>(null);
   const traceEndRef = useRef<HTMLTableRowElement | null>(null);
   const dfaContainerRef = useRef<HTMLDivElement | null>(null);
+  const dfaViewportRef = useRef<HTMLDivElement | null>(null);
   const dfaRenderCount = useRef(0);
+  const panStartRef = useRef<{ x: number; y: number } | null>(null);
+  const lastTranslateRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  const [dfaScale, setDfaScale] = useState(1);
+  const [dfaTranslate, setDfaTranslate] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
 
   const buildDfaMermaid = (
     collection: CanonicalCollection,
@@ -216,6 +223,10 @@ export default function ParserLab() {
     if (!dfaDiagram || !dfaContainerRef.current) return;
     let isMounted = true;
 
+    setDfaScale(1);
+    setDfaTranslate({ x: 0, y: 0 });
+    lastTranslateRef.current = { x: 0, y: 0 };
+
     const renderDiagram = async () => {
       try {
         mermaid.initialize({
@@ -243,6 +254,105 @@ export default function ParserLab() {
       isMounted = false;
     };
   }, [dfaDiagram, isDark]);
+
+  const handleDfaWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const viewport = dfaViewportRef.current;
+    if (!viewport) return;
+
+    const rect = viewport.getBoundingClientRect();
+    const cursorX = event.clientX - rect.left;
+    const cursorY = event.clientY - rect.top;
+
+    const zoomDelta = event.deltaY > 0 ? -0.1 : 0.1;
+    const nextScale = Math.min(6, Math.max(0.25, dfaScale + zoomDelta));
+
+    if (nextScale === dfaScale) return;
+
+    const scaleRatio = nextScale / dfaScale;
+    const nextTranslate = {
+      x: cursorX - (cursorX - dfaTranslate.x) * scaleRatio,
+      y: cursorY - (cursorY - dfaTranslate.y) * scaleRatio,
+    };
+
+    setDfaScale(nextScale);
+    setDfaTranslate(nextTranslate);
+    lastTranslateRef.current = nextTranslate;
+  };
+
+  const handleDfaPanStart = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    setIsPanning(true);
+    panStartRef.current = { x: event.clientX, y: event.clientY };
+  };
+
+  const handleDfaPanMove = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!isPanning || !panStartRef.current) return;
+    const dx = event.clientX - panStartRef.current.x;
+    const dy = event.clientY - panStartRef.current.y;
+
+    const nextTranslate = {
+      x: lastTranslateRef.current.x + dx,
+      y: lastTranslateRef.current.y + dy,
+    };
+
+    setDfaTranslate(nextTranslate);
+  };
+
+  const handleDfaPanEnd = () => {
+    if (!isPanning) return;
+    setIsPanning(false);
+    panStartRef.current = null;
+    lastTranslateRef.current = dfaTranslate;
+  };
+
+  const zoomDfaBy = (delta: number) => {
+    const viewport = dfaViewportRef.current;
+    if (!viewport) return;
+
+    const rect = viewport.getBoundingClientRect();
+    const centerX = rect.width / 2;
+    const centerY = rect.height / 2;
+
+    const nextScale = Math.min(6, Math.max(0.25, dfaScale + delta));
+    if (nextScale === dfaScale) return;
+
+    const scaleRatio = nextScale / dfaScale;
+    const nextTranslate = {
+      x: centerX - (centerX - dfaTranslate.x) * scaleRatio,
+      y: centerY - (centerY - dfaTranslate.y) * scaleRatio,
+    };
+
+    setDfaScale(nextScale);
+    setDfaTranslate(nextTranslate);
+    lastTranslateRef.current = nextTranslate;
+  };
+
+  const resetDfaView = () => {
+    setDfaScale(1);
+    setDfaTranslate({ x: 0, y: 0 });
+    lastTranslateRef.current = { x: 0, y: 0 };
+  };
+
+  const handleDownloadDfa = () => {
+    if (!dfaContainerRef.current) return;
+    const svgElement = dfaContainerRef.current.querySelector("svg");
+    if (!svgElement) return;
+
+    const serializer = new XMLSerializer();
+    const svgContent = serializer.serializeToString(svgElement);
+    const blob = new Blob([svgContent], {
+      type: "image/svg+xml;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "clr-dfa.svg";
+    link.click();
+
+    URL.revokeObjectURL(url);
+  };
 
   useEffect(() => {
     if (traceEndRef.current) {
@@ -365,7 +475,6 @@ export default function ParserLab() {
                 fontSize: "1rem",
                 fontWeight: 600,
                 marginBottom: "1rem",
-                display: "flex",
                 alignItems: "center",
                 gap: "0.5rem",
               }}
@@ -531,10 +640,52 @@ export default function ParserLab() {
                 justifyContent: "space-between",
                 alignItems: "center",
                 marginBottom: "1rem",
+                gap: "0.75rem",
               }}
             >
               <h2 style={{ fontSize: "1rem", fontWeight: 600 }}>LR(1) DFA</h2>
-              <span className="badge badge-blue">Item-set Automaton</span>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.5rem",
+                  flexWrap: "wrap",
+                }}
+              >
+                <span className="badge badge-blue">Item-set Automaton</span>
+                <button
+                  className="btn-ghost"
+                  style={{ padding: "0.375rem 0.75rem", borderRadius: "6px" }}
+                  onClick={() => zoomDfaBy(0.2)}
+                  title="Zoom in"
+                >
+                  Zoom In
+                </button>
+                <button
+                  className="btn-ghost"
+                  style={{ padding: "0.375rem 0.75rem", borderRadius: "6px" }}
+                  onClick={() => zoomDfaBy(-0.2)}
+                  title="Zoom out"
+                >
+                  Zoom Out
+                </button>
+                <button
+                  className="btn-ghost"
+                  style={{ padding: "0.375rem 0.75rem", borderRadius: "6px" }}
+                  onClick={resetDfaView}
+                  title="Reset zoom"
+                >
+                  Reset
+                </button>
+                <button
+                  className="btn-ghost"
+                  style={{ padding: "0.375rem 0.75rem", borderRadius: "6px" }}
+                  onClick={handleDownloadDfa}
+                  title="Download DFA as SVG"
+                >
+                  Download
+                </button>
+              </div>
             </div>
 
             <div
@@ -606,7 +757,7 @@ export default function ParserLab() {
               </div>
             ) : (
               <div
-                ref={dfaContainerRef}
+                ref={dfaViewportRef}
                 style={{
                   overflow: "auto",
                   border: "1px solid var(--border)",
@@ -614,8 +765,24 @@ export default function ParserLab() {
                   padding: "0.75rem",
                   background: "var(--bg-primary)",
                   minHeight: "240px",
+                  cursor: isPanning ? "grabbing" : "grab",
+                  userSelect: "none",
                 }}
-              />
+                onWheel={handleDfaWheel}
+                onMouseDown={handleDfaPanStart}
+                onMouseMove={handleDfaPanMove}
+                onMouseUp={handleDfaPanEnd}
+                onMouseLeave={handleDfaPanEnd}
+              >
+                <div
+                  ref={dfaContainerRef}
+                  style={{
+                    transform: `translate(${dfaTranslate.x}px, ${dfaTranslate.y}px) scale(${dfaScale})`,
+                    transformOrigin: "0 0",
+                    width: "fit-content",
+                  }}
+                />
+              </div>
             )}
           </div>
         )}
